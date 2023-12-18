@@ -2,9 +2,13 @@ import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import input from "input";
 import fs from "fs";
+import dotenv from "dotenv";
+import hash from "hash.js";
+import Client from "pg";
 
-const apiId = 29729100;
-const apiHash = "f55a87980bdf6f05c82aa75417cf8aed";
+const config = dotenv.config().parsed;
+const apiId = parseInt(config.API_ID);
+const apiHash = config.API_HASH;
 
 (async () => {
     console.log("Loading interactive example...");
@@ -18,7 +22,7 @@ const apiHash = "f55a87980bdf6f05c82aa75417cf8aed";
             console.log("Error loading session: " + e);
             stringSession = new StringSession("");
         }
-        console.log("Session loaded: " + sesh_string);
+        // console.log("Session loaded: " + sesh_string);
     } else {
         stringSession = new StringSession("");
     }
@@ -34,7 +38,7 @@ const apiHash = "f55a87980bdf6f05c82aa75417cf8aed";
         onError: (err) => console.log(err),
 
     });
-    await client.connect();
+    if (!client.connected) await client.connect();
     console.log("You should now be connected.");
     let sesh = client.session.save(); // Save this string to avoid logging in again
     console.log(sesh);
@@ -42,20 +46,54 @@ const apiHash = "f55a87980bdf6f05c82aa75417cf8aed";
     await client.sendMessage("me", { message: "Hello!" });
     console.log("Message should have been sent.");
     (async function run() {
-        await client.connect(); // This assumes you have already authenticated with .start()
+        if (!client.connected) await client.connect();
 
-        const result = await client.invoke(
+        let result = await client.invoke(
             new Api.channels.GetChannels({
                 id: ["S2UndergroundWire"],
             })
         );
-        // console.log(result); // prints the result
-        const messages = await client.invoke(
+        console.log(result);
+
+        result = await client.invoke(
+            new Api.users.GetFullUser({
+                id: "me",
+            })
+        );
+        console.log(result);
+
+        // result = await client.invoke(
+        //     new Api.messages.SendMessage({
+        //         peer: "News Aggregate AI",
+        //         message: "Hello!",
+        //     })
+        // );
+        // console.log(result);
+        const S2UndergroundWire_history = await client.invoke(
             new Api.messages.GetHistory({
-                peer: "S2UndergroundWire",
+                peer: "+sgnd6GX4YlllNWU5",
                 limit: 10,
             })
         );
-        console.log(messages); // prints the result
+        let hashes = [];
+        S2UndergroundWire_history.messages.forEach(mes => {
+            hashes.push(hash.sha512().update(mes.message).digest('hex'));
+            console.log(mes.message);
+        });
+        console.log(hashes);
+        // TODO: Add database stuff: check if hashes are in database, if not, add them and their respective messages
     })();
 })();
+
+/**
+ * 
+ * Program structure:
+ *  - Connect to Telegram and other services
+ *  - Get messages from Telegram, articles, etc.
+ *  - Store messages, articles, etc in database (if not already stored) using hash of message/article as key
+ *  - Have a thread with ChatGPT for each news source where each time a new message appears in that news source, it is sent to ChatGPT and the response is sent to the User
+ *      - The data from the news source should also be sent to ChatGPT for summary generation. That way ChatGPT can give a brief summary of the news source before giving a full update on the news source.
+ *  - Have a thread where all the full updates from ChatGPT are to ChatGPT. ChatGPT should then give a brief summary of that full report and then give a full update on whats happening in the world.
+ * 
+ * 
+ */

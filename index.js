@@ -23,8 +23,7 @@ const config = dotenv.config().parsed;
  */
 
 class ServiceManger {
-    // This class interacts with a services and gets the data from it, then stores it in the database, then sends it to ChatGPT
-
+    // This class interacts with a service, gets the data from it, then stores it in the database, then sends it to ChatGPT
 }
 
 class Database {
@@ -111,6 +110,11 @@ class Telegram {
             })
         );
     }
+
+    isConnected() {
+        // This function checks if Telegram is connected
+        return Telegram.client.connected;
+    }
 }
 
 class TelegramSource {
@@ -119,23 +123,23 @@ class TelegramSource {
         this.peer = peer;
         this.telegram = Telegram;
         this.db = Database;
-        this.ready = this.telegram.isValidPeer(this.peer);
+    }
+
+    get ready() {
+        return this.telegram.isValidPeer(this.peer) && this.telegram.isConnected();
     }
 
     async getDaysMessages(date) {
         // This function gets the messages from the source for the day
-        if(!this.ready)return;
-        
+        if(!this.ready)return [];
         let result = await this.telegram.getMessages(this.peer, 5, 0);
-        // console.log(result);  
+        let getDate = new Date(date).setHours(0,0,0,0);
+        let retMessages = [];
         result.messages.forEach(mes => {
             let messageDate = new Date(mes.date*1000).setHours(0,0,0,0);
-            let getDate = new Date(date).setHours(0,0,0,0);
-            console.log(messageDate, getDate);
-            if(messageDate == getDate){
-                console.log(mes);
-            }
+            if(messageDate == getDate) retMessages.push(mes);
         });
+        return retMessages;
     }
 }
 
@@ -153,5 +157,5 @@ class RedditSource {
 
 let db = new Database();
 let telegram = new Telegram();
-let S2UnderGround = new TelegramSource("S2UndergroundWire", telegram);
+let S2UnderGround = new TelegramSource("S2UndergroundWire", telegram, db);
 S2UnderGround.getDaysMessages(new Date().setDate(16).valueOf());

@@ -53,25 +53,25 @@ const apiHash = config.API_HASH;
                 id: ["S2UndergroundWire"],
             })
         );
-        console.log(result);
+        // console.log(result);
+
+        const user_me = await client.invoke(
+            new Api.users.GetUsers({
+                id: ["me"],
+            })
+        );
+        // console.log(user_me);
 
         result = await client.invoke(
-            new Api.users.GetFullUser({
-                id: "me",
+            new Api.messages.SendMessage({
+                peer: "NewsAggregateAI481",
+                message: "Hello!",
             })
         );
         console.log(result);
-
-        // result = await client.invoke(
-        //     new Api.messages.SendMessage({
-        //         peer: "News Aggregate AI",
-        //         message: "Hello!",
-        //     })
-        // );
-        // console.log(result);
         const S2UndergroundWire_history = await client.invoke(
             new Api.messages.GetHistory({
-                peer: "+sgnd6GX4YlllNWU5",
+                peer: "S2UndergroundWire",
                 limit: 10,
             })
         );

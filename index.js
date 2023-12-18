@@ -7,83 +7,7 @@ import hash from "hash.js";
 import Client from "pg";
 
 const config = dotenv.config().parsed;
-const apiId = parseInt(config.API_ID);
-const apiHash = config.API_HASH;
 
-(async () => {
-    console.log("Loading interactive example...");
-    let stringSession = null;
-    if (fs.existsSync("session.txt")) {
-        console.log("Loading saved session...");
-        let sesh_string = fs.readFileSync("session.txt").toString();
-        try {
-            stringSession = new StringSession(sesh_string);
-        } catch (e) {
-            console.log("Error loading session: " + e);
-            stringSession = new StringSession("");
-        }
-        // console.log("Session loaded: " + sesh_string);
-    } else {
-        stringSession = new StringSession("");
-    }
-
-    console.log("Connecting to Telegram...");
-    const client = new TelegramClient(stringSession, apiId, apiHash, {
-        connectionRetries: 5,
-    });
-    await client.start({
-        phoneNumber: async () => await input.text("Please enter your number: "),
-        password: async () => await input.text("Please enter your password: "),
-        phoneCode: async () => await input.text("Please enter the code you received: "),
-        onError: (err) => console.log(err),
-
-    });
-    if (!client.connected) await client.connect();
-    console.log("You should now be connected.");
-    let sesh = client.session.save(); // Save this string to avoid logging in again
-    console.log(sesh);
-    fs.writeFileSync("session.txt", sesh);
-    await client.sendMessage("me", { message: "Hello!" });
-    console.log("Message should have been sent.");
-    (async function run() {
-        if (!client.connected) await client.connect();
-
-        let result = await client.invoke(
-            new Api.channels.GetChannels({
-                id: ["S2UndergroundWire"],
-            })
-        );
-        // console.log(result);
-
-        const user_me = await client.invoke(
-            new Api.users.GetUsers({
-                id: ["me"],
-            })
-        );
-        // console.log(user_me);
-
-        result = await client.invoke(
-            new Api.messages.SendMessage({
-                peer: "NewsAggregateAI481",
-                message: "Hello!",
-            })
-        );
-        console.log(result);
-        const S2UndergroundWire_history = await client.invoke(
-            new Api.messages.GetHistory({
-                peer: "S2UndergroundWire",
-                limit: 10,
-            })
-        );
-        let hashes = [];
-        S2UndergroundWire_history.messages.forEach(mes => {
-            hashes.push(hash.sha512().update(mes.message).digest('hex'));
-            console.log(mes.message);
-        });
-        console.log(hashes);
-        // TODO: Add database stuff: check if hashes are in database, if not, add them and their respective messages
-    })();
-})();
 
 /**
  * 
@@ -97,3 +21,137 @@ const apiHash = config.API_HASH;
  * 
  * 
  */
+
+class ServiceManger {
+    // This class interacts with a services and gets the data from it, then stores it in the database, then sends it to ChatGPT
+
+}
+
+class Database {
+    // This class interacts with the database
+}
+
+class ChatGPT {
+    // This class interacts with ChatGPT
+}
+
+class Telegram {
+    // This class interacts with Telegram
+    static apiId = parseInt(config.API_ID);
+    static apiHash = config.API_HASH;
+    static client = null;
+
+    constructor() {
+        (async () => {
+            console.log("Loading interactive example...");
+            let stringSession = null;
+            if (fs.existsSync("session.txt")) {
+                console.log("Loading saved session...");
+                let sesh_string = fs.readFileSync("session.txt").toString();
+                try {
+                    stringSession = new StringSession(sesh_string);
+                } catch (e) {
+                    console.log("Error loading session: " + e);
+                    stringSession = new StringSession("");
+                }
+            } else {
+                stringSession = new StringSession("");
+            }
+
+            console.log("Connecting to Telegram...");
+            Telegram.client = new TelegramClient(stringSession, Telegram.apiId, Telegram.apiHash, {
+                connectionRetries: 5,
+            });
+            await Telegram.client.start({
+                phoneNumber: async () => await input.text("Please enter your number: "),
+                password: async () => await input.text("Please enter your password: "),
+                phoneCode: async () => await input.text("Please enter the code you received: "),
+                onError: (err) => console.log(err),
+
+            });
+            if (!Telegram.client.connected) await Telegram.client.connect();
+            console.log("You should now be connected.");
+            
+            let sesh = Telegram.client.session.save(); // Save this string to avoid logging in again
+            if(!fs.existsSync("session.txt")) fs.writeFileSync("session.txt",sesh);
+            else if(fs.readFileSync("session.txt").toString() != sesh) fs.writeFileSync("session.txt",sesh);
+        })();
+    }
+
+    async isValidPeer(peer) {
+        // This function checks if a peer is valid
+        if (!Telegram.client.connected) await Telegram.client.connect();
+        let res = await Telegram.client.invoke(
+            new Api.contacts.ResolveUsername({
+                username: peer,
+            })
+        );
+        return res.peer != null;
+    }
+
+    async getMessages(peer, limit, offset) {
+        // This function gets messages from Telegram
+        if (!Telegram.client.connected) await Telegram.client.connect();
+        return await Telegram.client.invoke(
+            new Api.messages.GetHistory({
+                peer: peer,
+                limit: limit,
+                addOffset: offset,
+            })
+        );
+    }
+
+    async sendMessage(peer, message) {
+        // This function sends a message to Telegram
+        if (!Telegram.client.connected) await Telegram.client.connect();
+        return await Telegram.client.invoke(
+            new Api.messages.SendMessage({
+                peer: peer,
+                message: message,
+            })
+        );
+    }
+}
+
+class TelegramSource {
+    // This class represents a telegram source
+    constructor(peer, Telegram, Database) {
+        this.peer = peer;
+        this.telegram = Telegram;
+        this.db = Database;
+        this.ready = this.telegram.isValidPeer(this.peer);
+    }
+
+    async getDaysMessages(date) {
+        // This function gets the messages from the source for the day
+        if(!this.ready)return;
+        
+        let result = await this.telegram.getMessages(this.peer, 5, 0);
+        // console.log(result);  
+        result.messages.forEach(mes => {
+            let messageDate = new Date(mes.date*1000).setHours(0,0,0,0);
+            let getDate = new Date(date).setHours(0,0,0,0);
+            console.log(messageDate, getDate);
+            if(messageDate == getDate){
+                console.log(mes);
+            }
+        });
+    }
+}
+
+class NewsSiteSource {
+    // This class represents a news source
+}
+
+class TwitterSource {
+    // This class represents a twitter source
+}
+
+class RedditSource {
+    // This class represents a reddit source
+}
+
+let db = new Database();
+let telegram = new Telegram();
+let S2UnderGround = new TelegramSource("S2UndergroundWire", telegram);
+S2UnderGround.getDaysMessages(new Date().setDate(16).valueOf());

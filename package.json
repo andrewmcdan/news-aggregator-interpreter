@@ -1,0 +1,24 @@
+{
+    "name": "news-aggregator-interpreter",
+    "version": "1.0.0",
+    "description": "Aggregate news and interpret using AI",
+    "main": "index.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/andrewcdan/news-aggregrator-interpreter.git"
+    },
+    "author": "Andrew McDaniel",
+    "license": "ISC",
+    "bugs": {
+        "url": "https://github.com/andrewcdan/news-aggregrator-interpreter/issues"
+    },
+    "homepage": "https://github.com/andrewcdan/news-aggregrator-interpreter#readme",
+    "type": "module",
+    "dependencies": {
+        "input": "^1.0.1",
+        "telegram": "^2.19.10"
+    }
+}

@@ -37,12 +37,12 @@ class ServiceManger {
         this.startDate = config.START_DATE;
         this.sources = [];
         this.tableName = this.service.name;
-        this.init();
+        // this.init();
     }
 
     async init() {
         // This function initializes the ServiceManager
-        if(!await this.db.checkIfTableExists(this.tableName)) await this.createTableAndFill();
+        if (!await this.db.checkIfTableExists(this.tableName)) await this.createTableAndFill();
     }
 
     async createTableAndFill() {
@@ -54,10 +54,10 @@ class ServiceManger {
     async fillTable() {
         // This function fills the table with data
         let date = new Date(this.startDate);
-        while(date < new Date()) {
+        while (date < new Date()) {
             let data = await this.service.getDataForDate(date);
             let hash = this.service.hash(data);
-            if(!await this.db.checkIfHashExists(hash)) await this.db.insertData(hash, data, date);
+            if (!await this.db.checkIfHashExists(hash)) await this.db.insertData(hash, data, date);
             date.setDate(date.getDate() + 1);
         }
     }
@@ -81,16 +81,16 @@ class Database {
 
     async connect() {
         // This function connects to the database
-        if(this.connectingInProgress) return new Promise(resolve => {
+        if (this.connectingInProgress) return new Promise(resolve => {
             let interval = setInterval(() => {
-                if(this.connected) {
+                if (this.connected) {
                     resolve();
                     clearInterval(interval);
                 }
             }, 100);
         });
         this.connectingInProgress = true;
-        while(!this.connected) {
+        while (!this.connected) {
             try {
                 await this.client.connect();
                 this.connected = true;
@@ -103,14 +103,14 @@ class Database {
     }
 
     async checkIfTableExists(tableName) {
-        if(!this.connected) await this.connect();
+        if (!this.connected) await this.connect();
         // This function checks if a table exists in the database
         let res = await this.client.query("SELECT * FROM pg_catalog.pg_tables WHERE tablename = $1", [tableName]);
         return res.rows.length > 0;
     }
 
     async createTable(tableName) {
-        if(!this.connected) await this.connect();
+        if (!this.connected) await this.connect();
         // This function creates a table in the database
         await this.client.query(`CREATE TABLE ${tableName} (hash TEXT PRIMARY KEY, data TEXT, date TIMESTAMP)`);
     }
@@ -212,10 +212,10 @@ class Telegram {
 
 class TelegramSource {
     // This class represents a telegram source
-    constructor(peer, Telegram) {
-        this.peer = peer;
+    constructor(Peer, Telegram, FormatData = (data) => { return data }) {
+        this.peer = Peer;
         this.telegram = Telegram;
-        this.db = Database;
+        this.formatData = FormatData;
     }
 
     get ready() {
@@ -237,19 +237,19 @@ class TelegramSource {
             messages.forEach(mes => {
                 let messageDate = new Date(mes.date * 1000).setHours(0, 0, 0, 0);
                 if (messageDate == getDate) {
-                    retMessages.push(mes);
+                    retMessages.push(mes.message);
                     dateFound = true;
                 }
             });
-            messages = await this.getMessages(100, messages[messages.length - 1]);
+            messages = await this.getMessages(100, messages.length - 1);
         }
         if (dateFound) {
             messages.forEach(mes => {
                 let messageDate = new Date(mes.date * 1000).setHours(0, 0, 0, 0);
-                if (messageDate == getDate) retMessages.push(mes);
+                if (messageDate == getDate) retMessages.push(mes.message);
             });
         }
-        return retMessages;
+        return this.formatData(retMessages);
     }
 
     async getMessages(limit, offset) {
@@ -272,7 +272,7 @@ class RedditSource {
     // This class represents a reddit source
 }
 
-class RSSFeedSource{
+class RSSFeedSource {
     // This class represents an RSS feed source
 }
 
@@ -281,10 +281,71 @@ class RSSFeedSource{
 const db = new Database();
 const telegram = new Telegram();
 const chatGPT = new ChatGPT();
-const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram);
+const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr) => {
+    textArr.forEach(text => {
+        if(text == undefined) return;
+        if(text == "") return;
+        if(text == " ") return;
+        if(text == null) return;
+        // Splitting the text into metadata and data sections
+        const [metadataText, dataText] = text.split("QQQQ");
+
+        // Extracting metadata
+        const metadata = metadataText.trim().split("\n").reduce((acc, line) => {
+            let [key, value] = line.split(":").map(s => s.trim());
+            acc[key] = value;
+            return acc;
+        }, {});
+
+        // Function to extract subsections and embedded analyst comments
+        const extractSection = (sectionText) => {
+            if(sectionText == undefined) return;
+            if(sectionText == null) return;
+            console.log({sectionText});
+            const sectionLines = sectionText.split(/[\n]|AC:/mg);
+            const sectionData = [];
+            let currentComment = "";
+
+            sectionLines.forEach(line => {
+                if(line == undefined) return;
+                if(line == null) return;
+                if(line == "") return;
+                if(line == " ") return;
+                if (line.startsWith("AC:")) currentComment += line.slice(3).trim() + " ";
+                else {
+                    if (currentComment) {
+                        sectionData.push({ "analystComment": currentComment.trim() });
+                        currentComment = "";
+                    }
+                    sectionData.push({ "content": line.trim() });
+                }
+            });
+            if (currentComment) sectionData.push({ "analystComment": currentComment.trim() });
+            return sectionData;
+        }
+        // Extracting data sections
+        const sections = dataText.split("-----");
+        const data = {
+            internationalEvents: extractSection(sections.find(section => section.includes("-International Events-"))),
+            homefront: extractSection(sections.find(section => section.includes("-Homefront-"))),
+            analystComments: extractSection(sections.find(section => section.includes("-Analyst Comments-")))
+        };
+        // Constructing the JSON object
+        console.log(JSON.stringify({ metadata, data }, null, 2));
+    });
+});
+
 let services = [
     new ServiceManger(db, s2UnderGround, chatGPT)
-]
+];
+
+
+//#region testing
+(async () => {
+    await waitSeconds(3);
+    s2UnderGround.getDataForDate(new Date().setDate(16));
+})();
+//#endregion
 
 async function waitSeconds(seconds) {
     return new Promise(resolve => setTimeout(resolve, seconds * 1000));

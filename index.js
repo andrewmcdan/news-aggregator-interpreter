@@ -3,7 +3,7 @@ import { StringSession } from "telegram/sessions/index.js";
 import input from "input";
 import fs from "fs";
 import dotenv from "dotenv";
-import hash from "hash.js";
+import sha512 from "hash.js/lib/hash/sha/512.js";
 import Client from "pg";
 import { time } from "console";
 
@@ -37,12 +37,13 @@ class ServiceManger {
         this.startDate = config.START_DATE;
         this.sources = [];
         this.tableName = this.service.name;
-        // this.init();
+        this.init();
     }
 
     async init() {
         // This function initializes the ServiceManager
         if (!await this.db.checkIfTableExists(this.tableName)) await this.createTableAndFill();
+        await this.fillTable(); //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// debug
     }
 
     async createTableAndFill() {
@@ -53,12 +54,14 @@ class ServiceManger {
 
     async fillTable() {
         // This function fills the table with data
-        let date = new Date(this.startDate);
-        while (date < new Date()) {
+        let fillStartDate = new Date(this.startDate);
+        let date = new Date();
+        console.log({fillStartDate});
+        while (fillStartDate <  date) {
             let data = await this.service.getDataForDate(date);
-            let hash = this.service.hash(data);
-            if (!await this.db.checkIfHashExists(hash)) await this.db.insertData(hash, data, date);
-            date.setDate(date.getDate() + 1);
+            let hash = sha512().update(data).digest('hex');
+            if (!await this.db.checkIfHashExists(this.tableName, hash)) await this.db.insertData(this.tableName, hash, data, date);
+            date = date - 1000 * 60 * 60 * 24;
         }
     }
 }
@@ -105,14 +108,28 @@ class Database {
     async checkIfTableExists(tableName) {
         if (!this.connected) await this.connect();
         // This function checks if a table exists in the database
-        let res = await this.client.query("SELECT * FROM pg_catalog.pg_tables WHERE tablename = $1", [tableName]);
-        return res.rows.length > 0;
+        let res = await this.client.query("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)", [tableName.toLowerCase()]);
+        return res.rows[0].exists;
     }
 
     async createTable(tableName) {
         if (!this.connected) await this.connect();
         // This function creates a table in the database
         await this.client.query(`CREATE TABLE ${tableName} (hash TEXT PRIMARY KEY, data TEXT, date TIMESTAMP)`);
+    }
+
+    async checkIfHashExists(tableName, hash) {
+        if (!this.connected) await this.connect();
+        // This function checks if a hash exists in the database
+        let res = await this.client.query(`SELECT EXISTS (SELECT FROM ${tableName} WHERE hash = $1)`, [hash]);
+        return res.rows[0].exists;
+    }
+
+    async insertData(tableName, hash, data, date) {
+        if (!this.connected) await this.connect();
+        if(typeof data != "string") data = JSON.stringify(data, null, 2);
+        // This function inserts data into the database
+        await this.client.query(`INSERT INTO ${tableName} (hash, data, date) VALUES ($1, $2, $3)`, [hash, data, date]);
     }
 }
 
@@ -216,6 +233,7 @@ class TelegramSource {
         this.peer = Peer;
         this.telegram = Telegram;
         this.formatData = FormatData;
+        this.offset = 0;
     }
 
     get ready() {
@@ -230,7 +248,7 @@ class TelegramSource {
         // This function gets the messages from the source for the day
         if (!this.ready) return [];
         let getDate = new Date(date).setHours(0, 0, 0, 0);
-        let messages = await this.getMessages(100, 0);
+        let messages = await this.getMessages(100, this.offset);
         let dateFound = false;
         let retMessages = [];
         while (!dateFound) {
@@ -241,7 +259,7 @@ class TelegramSource {
                     dateFound = true;
                 }
             });
-            messages = await this.getMessages(100, messages.length - 1);
+            messages = await this.getMessages(100, this.offset += 100);
         }
         if (dateFound) {
             messages.forEach(mes => {
@@ -249,6 +267,7 @@ class TelegramSource {
                 if (messageDate == getDate) retMessages.push(mes.message);
             });
         }
+        console.log(`got ${retMessages.length} messages for ${this.peer} on ${new Date(date).toDateString()}`);
         return this.formatData(retMessages);
     }
 
@@ -282,57 +301,63 @@ const db = new Database();
 const telegram = new Telegram();
 const chatGPT = new ChatGPT();
 const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr) => {
+    let ret = {};
+    ret.data = [];
     textArr.forEach(text => {
-        if(text == undefined) return;
-        if(text == "") return;
-        if(text == " ") return;
-        if(text == null) return;
+        if (text == undefined) return;
+        if (text == "") return;
+        if (text == " ") return;
+        if (text == null) return;
         // Splitting the text into metadata and data sections
-        const [metadataText, dataText] = text.split("QQQQ");
-
+        const [metadataText, , dataText, , endData] = text.split("-----");
         // Extracting metadata
         const metadata = metadataText.trim().split("\n").reduce((acc, line) => {
             let [key, value] = line.split(":").map(s => s.trim());
             acc[key] = value;
             return acc;
         }, {});
-
         // Function to extract subsections and embedded analyst comments
         const extractSection = (sectionText) => {
-            if(sectionText == undefined) return;
-            if(sectionText == null) return;
-            console.log({sectionText});
-            const sectionLines = sectionText.split(/[\n]|AC:/mg);
-            const sectionData = [];
-            let currentComment = "";
-
-            sectionLines.forEach(line => {
-                if(line == undefined) return;
-                if(line == null) return;
-                if(line == "") return;
-                if(line == " ") return;
-                if (line.startsWith("AC:")) currentComment += line.slice(3).trim() + " ";
-                else {
-                    if (currentComment) {
-                        sectionData.push({ "analystComment": currentComment.trim() });
-                        currentComment = "";
-                    }
-                    sectionData.push({ "content": line.trim() });
+            if (sectionText == undefined) return;
+            if (sectionText == null) return;
+            let sectionLines = sectionText.split(/(\n|(AC:))/mg);
+            for(let i = sectionLines.length - 1; i > 0; i--){
+                if(sectionLines[i - 1]?.includes("AC:")) {
+                    sectionLines[i] = sectionLines[i - 1] + sectionLines[i];
+                    sectionLines[i - 1] = "";
+                    sectionLines[i - 2] = "";
+                    i-=2;
                 }
+            }
+            const sectionData = [];
+            let comments = [];
+            sectionLines.forEach(line => {
+                if (line == undefined) return;
+                if (line == null) return;
+                if (line == "") return;
+                if (line == " ") return;
+                if(line == '\n') return;
+                if(line.match(/-[a-zA-Z]+\s[a-zA-Z]+-/g)) return;
+                if (line.startsWith("AC:")) {
+                    sectionData.push({ "analystComment": line.slice(3).trim() });
+                    comments.push(line.slice(3).trim());
+                }else sectionData.push({ "content": line.trim() });
+
             });
-            if (currentComment) sectionData.push({ "analystComment": currentComment.trim() });
+            if(comments.length > 0 && sectionText.includes("-Analyst Comments-")) sectionData.push({ "analystComments": comments });
             return sectionData;
         }
         // Extracting data sections
-        const sections = dataText.split("-----");
+        let sections = dataText.split(/((-[a-zA-Z]+\s[a-zA-Z]+-)(\n[\s\S]*?)*(?=-[a-zA-Z]+\s[a-zA-Z]+-|$))/gm);
         const data = {
             internationalEvents: extractSection(sections.find(section => section.includes("-International Events-"))),
             homefront: extractSection(sections.find(section => section.includes("-Homefront-"))),
             analystComments: extractSection(sections.find(section => section.includes("-Analyst Comments-")))
         };
         // Constructing the JSON object
-        console.log(JSON.stringify({ metadata, data }, null, 2));
+        ret.data.push({ metadata, data });
     });
+    return JSON.stringify(ret.data, null, 2);
 });
 
 let services = [
@@ -341,10 +366,10 @@ let services = [
 
 
 //#region testing
-(async () => {
-    await waitSeconds(3);
-    s2UnderGround.getDataForDate(new Date().setDate(16));
-})();
+// (async () => {
+//     await waitSeconds(3);
+//     s2UnderGround.getDataForDate(new Date().setDate(15));
+// })();
 //#endregion
 
 async function waitSeconds(seconds) {

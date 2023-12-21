@@ -56,11 +56,28 @@ class ServiceManger {
         // This function fills the table with data
         let fillStartDate = new Date(this.startDate);
         let date = new Date();
-        console.log({fillStartDate});
-        while (fillStartDate <  date) {
+        console.log({ fillStartDate });
+        while (fillStartDate < date) {
             let data = await this.service.getDataForDate(date);
-            let hash = sha512().update(data).digest('hex');
-            if (!await this.db.checkIfHashExists(this.tableName, hash)) await this.db.insertData(this.tableName, hash, data, date);
+            // console.log("typeof data: " + typeof data);
+            if (typeof data == "string") data = [data];
+            if (!Array.isArray(data)) {
+                // recursively walk through data and the strings that are not empty are the data
+                let dataArr = [];
+                const walk = (obj) => {
+                    for (let key in obj) {
+                        if (typeof obj[key] == "string") {
+                            if (obj[key] != "") dataArr.push(obj[key]);
+                        } else walk(obj[key]);
+                    }
+                }
+                walk(data);
+                data = dataArr;
+            }
+            for (let i = 0; i < data.length; i++) {
+                let hash = sha512().update(data[i]).digest('hex');
+                if (!await this.db.checkIfHashExists(this.tableName, hash)) await this.db.insertData(this.tableName, hash, data[i], new Date(date).toLocaleString());
+            }
             date = date - 1000 * 60 * 60 * 24;
         }
     }
@@ -127,7 +144,7 @@ class Database {
 
     async insertData(tableName, hash, data, date) {
         if (!this.connected) await this.connect();
-        if(typeof data != "string") data = JSON.stringify(data, null, 2);
+        if (typeof data != "string") data = JSON.stringify(data, null, 2);
         // This function inserts data into the database
         await this.client.query(`INSERT INTO ${tableName} (hash, data, date) VALUES ($1, $2, $3)`, [hash, data, date]);
     }
@@ -197,6 +214,7 @@ class Telegram {
     async getMessages(peer, limit, offset) {
         // This function gets messages from Telegram
         if (!Telegram.client.connected) await Telegram.client.connect();
+        // console.log("Getting messages from Telegram for peer: " + peer, "limit: " + limit, "offset: " + offset)
         return await Telegram.client.invoke(
             new Api.messages.GetHistory({
                 peer: peer,
@@ -233,7 +251,7 @@ class TelegramSource {
         this.peer = Peer;
         this.telegram = Telegram;
         this.formatData = FormatData;
-        this.offset = 0;
+        this.downloadedData = [];
     }
 
     get ready() {
@@ -248,33 +266,49 @@ class TelegramSource {
         // This function gets the messages from the source for the day
         if (!this.ready) return [];
         let getDate = new Date(date).setHours(0, 0, 0, 0);
-        let messages = await this.getMessages(100, this.offset);
+        let messages = await this.getMessages(100, 0);
         let dateFound = false;
         let retMessages = [];
+        let offset = 0;
         while (!dateFound) {
-            messages.forEach(mes => {
-                let messageDate = new Date(mes.date * 1000).setHours(0, 0, 0, 0);
+            for (let i = 0; i < messages.length; i++) {
+                let messageDate = new Date(messages[i].date * 1000).setHours(0, 0, 0, 0);
                 if (messageDate == getDate) {
-                    retMessages.push(mes.message);
+                    retMessages.push(messages[i].message);
                     dateFound = true;
                 }
-            });
-            messages = await this.getMessages(100, this.offset += 100);
+            }
+            // messages.forEach(mes => {
+            //     let messageDate = new Date(mes.date * 1000).setHours(0, 0, 0, 0);
+            //     if (messageDate == getDate) {
+            //         retMessages.push(mes.message);
+            //         dateFound = true;
+            //     }
+            // });
+            if (messages[messages.length - 1]?.date < getDate) break;
+            messages = await this.getMessages(100, offset += 100);
         }
-        if (dateFound) {
-            messages.forEach(mes => {
-                let messageDate = new Date(mes.date * 1000).setHours(0, 0, 0, 0);
-                if (messageDate == getDate) retMessages.push(mes.message);
-            });
-        }
-        console.log(`got ${retMessages.length} messages for ${this.peer} on ${new Date(date).toDateString()}`);
-        return this.formatData(retMessages);
+
+        // console.log(`got ${retMessages.length} messages for ${this.peer} on ${new Date(date).toDateString()}`);
+        let retVal = [];
+        retMessages.forEach(message => {
+            let data = this.formatData(message);
+            if (data != undefined) retVal.push(data);
+        });
+        return retVal;
     }
 
     async getMessages(limit, offset) {
         // This function gets messages from the source
         if (!this.ready) return [];
-        let result = await this.telegram.getMessages(this.peer, limit, offset);
+        let result = {};
+        // console.log("Getting messages from Telegram for peer: " + this.peer, "limit: " + limit, "offset: " + offset, "downloadedData length: " + this.downloadedData.length)
+        if (limit + offset > this.downloadedData.length + offset) {
+            result = await this.telegram.getMessages(this.peer, limit, offset);
+            this.downloadedData = result.messages;
+        } else {
+            result.messages = this.downloadedData.slice(offset, limit + offset);
+        }
         return result.messages;
     }
 }
@@ -303,6 +337,7 @@ const chatGPT = new ChatGPT();
 const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr) => {
     let ret = {};
     ret.data = [];
+    if (typeof textArr == "string") textArr = [textArr];
     textArr.forEach(text => {
         if (text == undefined) return;
         if (text == "") return;
@@ -310,6 +345,10 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
         if (text == null) return;
         // Splitting the text into metadata and data sections
         const [metadataText, , dataText, , endData] = text.split("-----");
+        if (metadataText == undefined) return;
+        if (metadataText == null) return;
+        if (dataText == undefined) return;
+        if (dataText == null) return;
         // Extracting metadata
         const metadata = metadataText.trim().split("\n").reduce((acc, line) => {
             let [key, value] = line.split(":").map(s => s.trim());
@@ -321,12 +360,12 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
             if (sectionText == undefined) return;
             if (sectionText == null) return;
             let sectionLines = sectionText.split(/(\n|(AC:))/mg);
-            for(let i = sectionLines.length - 1; i > 0; i--){
-                if(sectionLines[i - 1]?.includes("AC:")) {
+            for (let i = sectionLines.length - 1; i > 0; i--) {
+                if (sectionLines[i - 1]?.includes("AC:")) {
                     sectionLines[i] = sectionLines[i - 1] + sectionLines[i];
                     sectionLines[i - 1] = "";
                     sectionLines[i - 2] = "";
-                    i-=2;
+                    i -= 2;
                 }
             }
             const sectionData = [];
@@ -336,15 +375,15 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
                 if (line == null) return;
                 if (line == "") return;
                 if (line == " ") return;
-                if(line == '\n') return;
-                if(line.match(/-[a-zA-Z]+\s[a-zA-Z]+-/g)) return;
+                if (line == '\n') return;
+                if (line.match(/-[a-zA-Z]+\s[a-zA-Z]+-/g)) return;
                 if (line.startsWith("AC:")) {
                     sectionData.push({ "analystComment": line.slice(3).trim() });
                     comments.push(line.slice(3).trim());
-                }else sectionData.push({ "content": line.trim() });
+                } else sectionData.push({ "content": line.trim() });
 
             });
-            if(comments.length > 0 && sectionText.includes("-Analyst Comments-")) sectionData.push({ "analystComments": comments });
+            if (comments.length > 0 && sectionText.includes("-Analyst Comments-")) sectionData.push({ "analystComments": comments });
             return sectionData;
         }
         // Extracting data sections
@@ -357,7 +396,7 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
         // Constructing the JSON object
         ret.data.push({ metadata, data });
     });
-    return JSON.stringify(ret.data, null, 2);
+    return JSON.stringify(ret, null, 2);
 });
 
 let services = [

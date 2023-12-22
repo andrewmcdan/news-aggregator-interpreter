@@ -5,10 +5,8 @@ import fs from "fs";
 import dotenv from "dotenv";
 import sha512 from "hash.js/lib/hash/sha/512.js";
 import Client from "pg";
-import { time } from "console";
 
 const config = dotenv.config().parsed;
-
 
 /**
  * 
@@ -278,13 +276,6 @@ class TelegramSource {
                     dateFound = true;
                 }
             }
-            // messages.forEach(mes => {
-            //     let messageDate = new Date(mes.date * 1000).setHours(0, 0, 0, 0);
-            //     if (messageDate == getDate) {
-            //         retMessages.push(mes.message);
-            //         dateFound = true;
-            //     }
-            // });
             if (messages[messages.length - 1]?.date < getDate) break;
             messages = await this.getMessages(100, offset += 100);
         }
@@ -339,16 +330,10 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
     ret.data = [];
     if (typeof textArr == "string") textArr = [textArr];
     textArr.forEach(text => {
-        if (text == undefined) return;
-        if (text == "") return;
-        if (text == " ") return;
-        if (text == null) return;
+        if (text == undefined||text == ""||text == " "||text == null) return;
         // Splitting the text into metadata and data sections
         const [metadataText, , dataText, , endData] = text.split("-----");
-        if (metadataText == undefined) return;
-        if (metadataText == null) return;
-        if (dataText == undefined) return;
-        if (dataText == null) return;
+        if (metadataText == undefined||metadataText == null||dataText == undefined||dataText == null) return;
         // Extracting metadata
         const metadata = metadataText.trim().split("\n").reduce((acc, line) => {
             let [key, value] = line.split(":").map(s => s.trim());
@@ -357,8 +342,7 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
         }, {});
         // Function to extract subsections and embedded analyst comments
         const extractSection = (sectionText) => {
-            if (sectionText == undefined) return;
-            if (sectionText == null) return;
+            if (sectionText == undefined||sectionText == null) return;
             let sectionLines = sectionText.split(/(\n|(AC:))/mg);
             for (let i = sectionLines.length - 1; i > 0; i--) {
                 if (sectionLines[i - 1]?.includes("AC:")) {
@@ -371,12 +355,7 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
             const sectionData = [];
             let comments = [];
             sectionLines.forEach(line => {
-                if (line == undefined) return;
-                if (line == null) return;
-                if (line == "") return;
-                if (line == " ") return;
-                if (line == '\n') return;
-                if (line.match(/-[a-zA-Z]+\s[a-zA-Z]+-/g)) return;
+                if (line == undefined||line == null||line == ""||line == " "||line == '\n'||line.match(/-[a-zA-Z]+\s[a-zA-Z]+-/g)) return;
                 if (line.startsWith("AC:")) {
                     sectionData.push({ "analystComment": line.slice(3).trim() });
                     comments.push(line.slice(3).trim());

@@ -56,8 +56,9 @@ class ServiceManger {
         let date = new Date();
         console.log({ fillStartDate });
         while (fillStartDate < date) {
+            console.log("Filling table for " + this.tableName + " on " + Date(date));
             let data = await this.service.getDataForDate(date);
-            // console.log("typeof data: " + typeof data);
+            
             if (typeof data == "string") data = [data];
             if (!Array.isArray(data)) {
                 // recursively walk through data and the strings that are not empty are the data
@@ -72,9 +73,9 @@ class ServiceManger {
                 walk(data);
                 data = dataArr;
             }
-            for (let i = 0; i < data.length; i++) {
-                let hash = sha512().update(data[i]).digest('hex');
-                if (!await this.db.checkIfHashExists(this.tableName, hash)) await this.db.insertData(this.tableName, hash, data[i], new Date(date).toLocaleString());
+            for (const element of data) {
+                let hash = sha512().update(element).digest('hex');
+                if (!await this.db.checkIfHashExists(this.tableName, hash)) await this.db.insertData(this.tableName, hash, element, new Date(date).toLocaleString());
             }
             date = date - 1000 * 60 * 60 * 24;
         }
@@ -163,7 +164,6 @@ class Telegram {
 
     constructor() {
         (async () => {
-            console.log("Loading interactive example...");
             let stringSession = null;
             if (fs.existsSync("session.txt")) {
                 console.log("Loading saved session...");
@@ -250,6 +250,7 @@ class TelegramSource {
         this.telegram = Telegram;
         this.formatData = FormatData;
         this.downloadedData = [];
+        this.foundEndOfHistory = false;
     }
 
     get ready() {
@@ -263,24 +264,34 @@ class TelegramSource {
     async getDataForDate(date) {
         // This function gets the messages from the source for the day
         if (!this.ready) return [];
-        let getDate = new Date(date).setHours(0, 0, 0, 0);
+        let getDate = Math.floor(new Date(date) / 1000);
         let messages = await this.getMessages(100, 0);
+        if(messages.length < 100) {
+            this.foundEndOfHistory = true;
+        }
         let dateFound = false;
+        let pastDate = false;
         let retMessages = [];
-        let offset = 0;
-        while (!dateFound) {
-            for (let i = 0; i < messages.length; i++) {
-                let messageDate = new Date(messages[i].date * 1000).setHours(0, 0, 0, 0);
-                if (messageDate == getDate) {
-                    retMessages.push(messages[i].message);
+        let offset = 100;
+        while (!dateFound && !pastDate) {
+            for (const element of messages) {
+                if (element.date == getDate) {
+                    retMessages.push(element.message);
                     dateFound = true;
+                }else if (element.date < getDate) {
+                    pastDate = true;
+                    break;
                 }
             }
-            if (messages[messages.length - 1]?.date < getDate) break;
-            messages = await this.getMessages(100, offset += 100);
+            if (messages[messages.length - 1]?.date < getDate || this.foundEndOfHistory) break;
+            messages = await this.getMessages(100, offset);
+            if (messages.length == 0) {
+                this.foundEndOfHistory = true;
+                break;
+            }
+            offset = offset + 100;
         }
 
-        // console.log(`got ${retMessages.length} messages for ${this.peer} on ${new Date(date).toDateString()}`);
         let retVal = [];
         retMessages.forEach(message => {
             let data = this.formatData(message);
@@ -293,11 +304,13 @@ class TelegramSource {
         // This function gets messages from the source
         if (!this.ready) return [];
         let result = {};
-        // console.log("Getting messages from Telegram for peer: " + this.peer, "limit: " + limit, "offset: " + offset, "downloadedData length: " + this.downloadedData.length)
-        if (limit + offset > this.downloadedData.length + offset) {
+        console.log("Getting messages from Telegram for peer: " + this.peer, "limit: " + limit, "offset: " + offset, "downloadedData length: " + this.downloadedData.length)
+        if (limit + offset > this.downloadedData.length && !this.foundEndOfHistory) {
             result = await this.telegram.getMessages(this.peer, limit, offset);
-            this.downloadedData = result.messages;
+            if(result.messages.length == 0) this.foundEndOfHistory = true;
+            this.downloadedData.push(...result.messages);
         } else {
+            result.messages = [];
             result.messages = this.downloadedData.slice(offset, limit + offset);
         }
         return result.messages;
@@ -332,48 +345,8 @@ const s2UnderGround = new TelegramSource("S2UndergroundWire", telegram, (textArr
     textArr.forEach(text => {
         if (text == undefined||text == ""||text == " "||text == null) return;
         // Splitting the text into metadata and data sections
-        const [metadataText, , dataText, , endData] = text.split("-----");
-        if (metadataText == undefined||metadataText == null||dataText == undefined||dataText == null) return;
-        // Extracting metadata
-        const metadata = metadataText.trim().split("\n").reduce((acc, line) => {
-            let [key, value] = line.split(":").map(s => s.trim());
-            acc[key] = value;
-            return acc;
-        }, {});
-        // Function to extract subsections and embedded analyst comments
-        const extractSection = (sectionText) => {
-            if (sectionText == undefined||sectionText == null) return;
-            let sectionLines = sectionText.split(/(\n|(AC:))/mg);
-            for (let i = sectionLines.length - 1; i > 0; i--) {
-                if (sectionLines[i - 1]?.includes("AC:")) {
-                    sectionLines[i] = sectionLines[i - 1] + sectionLines[i];
-                    sectionLines[i - 1] = "";
-                    sectionLines[i - 2] = "";
-                    i -= 2;
-                }
-            }
-            const sectionData = [];
-            let comments = [];
-            sectionLines.forEach(line => {
-                if (line == undefined||line == null||line == ""||line == " "||line == '\n'||line.match(/-[a-zA-Z]+\s[a-zA-Z]+-/g)) return;
-                if (line.startsWith("AC:")) {
-                    sectionData.push({ "analystComment": line.slice(3).trim() });
-                    comments.push(line.slice(3).trim());
-                } else sectionData.push({ "content": line.trim() });
-
-            });
-            if (comments.length > 0 && sectionText.includes("-Analyst Comments-")) sectionData.push({ "analystComments": comments });
-            return sectionData;
-        }
-        // Extracting data sections
-        let sections = dataText.split(/((-[a-zA-Z]+\s[a-zA-Z]+-)(\n[\s\S]*?)*(?=-[a-zA-Z]+\s[a-zA-Z]+-|$))/gm);
-        const data = {
-            internationalEvents: extractSection(sections.find(section => section.includes("-International Events-"))),
-            homefront: extractSection(sections.find(section => section.includes("-Homefront-"))),
-            analystComments: extractSection(sections.find(section => section.includes("-Analyst Comments-")))
-        };
-        // Constructing the JSON object
-        ret.data.push({ metadata, data });
+        
+        ret.data.push({ text });
     });
     return JSON.stringify(ret, null, 2);
 });
